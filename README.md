@@ -1,16 +1,7 @@
-1. raw input line
-2. split by ';' → cmds[]
-3. tokenize → Token**
-4. expand + execute → char** argv internally
+# TODO
 
-
-WANT TO DO
-Input string
-   ↓
-Lexer (tokens)
-   ↓
-Parser
-   ↓
-AST (structured command tree)
-   ↓
-Executor (walk AST)
+- Need to add autocompletion
+- Automated Unit-tests
+- Logical Operators
+- Environment Variable Expansion
+- Proper Job Control
