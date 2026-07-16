@@ -2,11 +2,15 @@
 #include "lexer.h"
 #include "parser.h"
 #include "executor.h"
+#include "completion.h"
 
-void Ssh_print_prompt(void) {
+#include <readline/readline.h>
+#include <readline/history.h>
+
+// Helper to generate the prompt string dynamically
+void get_prompt(char *prompt_buf, size_t max_len) {
       char hostname[256];
       char cwd[4096];
-
       struct passwd *pw = getpwuid(getuid());
 
       if (gethostname(hostname, sizeof(hostname)) != 0)
@@ -15,39 +19,50 @@ void Ssh_print_prompt(void) {
       if (getcwd(cwd, sizeof(cwd)) == NULL)
 	    strcpy(cwd, "?");
 
-      printf("%s@%s # %s > ",
+      snprintf(prompt_buf, max_len, "%s@%s # %s > ",
 	    pw ? pw->pw_name : "?",
 	    hostname,
 	    cwd);
-
-      fflush(stdout);
 }
 
 int main(void) {
-      char line[1024];
+      char *line;
+      char prompt[4352];
       int status = 1;
 
+      init_completion();
+
       while (status) {
-	    Ssh_print_prompt();
-	    fflush(stdout);
+	    get_prompt(prompt, sizeof(prompt));
         
-	    if (!fgets(line, sizeof(line), stdin)) break;
-	    if (strcmp(line, "\n") == 0) continue;
+	    line = readline(prompt);
+        
+	    if (!line) {
+		  // Handle Ctrl+D (EOF) gracefully
+		  printf("\n");
+		  break;
+	    }
 
-	    int token_count = 0;
-	    LexToken *tokens = lex(line, &token_count);
+	    if (strlen(line) > 0) {
+		  add_history(line); // Saves the command in the up/down arrow history buffer!
 
-	    if (token_count > 1) { // If not only TOK_EOF
+		  int token_count = 0;
+		  LexToken *tokens = lex(line, &token_count);
+
+            if (token_count > 1) { // If not only TOK_EOF
 		  int pos = 0;
 		  ASTNode *root = parse_sequence(tokens, &pos);
-            
+                
 		  // Execute AST
 		  status = execute_ast(root);
-            
+                
 		  free_ast(root);
-	    }
+            }
+            
+            free_tokens(tokens, token_count);
+        }
         
-	    free_tokens(tokens, token_count);
+	    free(line); 
       }
 
       return EXIT_SUCCESS;
