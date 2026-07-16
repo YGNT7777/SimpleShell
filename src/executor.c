@@ -293,6 +293,35 @@ int execute_ast(ASTNode *node) {
             signal(SIGTTOU, SIG_DFL);
 
             // Redirection logic (<, >, >>) ...
+	    // <
+	    if (node->input_file) {
+                int fd_in = open(node->input_file, O_RDONLY);
+                if (fd_in < 0) {
+                    perror("Ssh: open input file");
+                    exit(EXIT_FAILURE);
+                }
+                dup2(fd_in, STDIN_FILENO);
+                close(fd_in);
+            }
+
+            // (> and >>)
+            if (node->output_file) {
+                int flags = O_WRONLY | O_CREAT;
+                if (node->append) {
+                    flags |= O_APPEND;
+                } else {
+                    flags |= O_TRUNC;
+                }
+                
+                // Open with read/write permissions for owner, read-only for group/others
+                int fd_out = open(node->output_file, flags, 0644);
+                if (fd_out < 0) {
+                    perror("Ssh: open output file");
+                    exit(EXIT_FAILURE);
+                }
+                dup2(fd_out, STDOUT_FILENO);
+                close(fd_out);
+            }
 
             if (execvp(node->args[0], node->args) == -1) {
                 perror("Ssh");
