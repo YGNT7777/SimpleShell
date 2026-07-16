@@ -57,4 +57,20 @@ typedef struct ASTNode {
       int background;
 } ASTNode;
 
+// --- Job Control Types ---
+typedef enum {
+    JOB_RUNNING,
+    JOB_STOPPED
+} JobState;
+
+typedef struct Job {
+    int id;
+    pid_t pgid;
+    char *command;
+    JobState state;
+    struct Job *next;
+} Job;
+
+extern Job *first_job;
+
 #endif // COMMON_H

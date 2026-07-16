@@ -3,9 +3,19 @@
 #include "parser.h"
 #include "executor.h"
 #include "completion.h"
-
+#include <signal.h>
 #include <readline/readline.h>
 #include <readline/history.h>
+
+void init_shell_signals(void) {
+    // Prevent the shell from exiting on Ctrl+C or Ctrl+Z
+    signal(SIGINT, SIG_IGN);
+    signal(SIGTSTP, SIG_IGN);
+    
+    // Ignore terminal read/write signals for background jobs
+    signal(SIGTTIN, SIG_IGN);
+    signal(SIGTTOU, SIG_IGN);
+}
 
 // Helper to generate the prompt string dynamically
 void get_prompt(char *prompt_buf, size_t max_len) {
@@ -30,9 +40,11 @@ int main(void) {
       char prompt[4352];
       int status = 1;
 
+      init_shell_signals();
       init_completion();
 
       while (status) {
+	    update_jobs();
 	    get_prompt(prompt, sizeof(prompt));
         
 	    line = readline(prompt);
