@@ -1,4 +1,39 @@
 #include "parser.h"
+#include <stdlib.h>
+
+// Helper to expand environment variables like $USER to their actual values
+static char *expand_env_var(const char *arg) {
+      const char *start = arg;
+      int has_quotes = 0;
+
+      // Check if the argument starts with a double quote: e.g. "$USER"
+      if (arg[0] == '"') {
+	    start = arg + 1;
+	    has_quotes = 1;
+      }
+
+      // Check if the actual payload starts with '$'
+      if (start[0] != '$') {
+	    return strdup(arg); // Standard string, return as-is
+      }
+
+      // Extract the variable name
+      const char *var_name = start + 1;
+      char *var_name_dup = strdup(var_name);
+      if (!var_name_dup) { perror("strdup"); exit(EXIT_FAILURE); }
+
+      // Clean up the trailing double quote if it exists
+      size_t len = strlen(var_name_dup);
+      if (has_quotes && len > 0 && var_name_dup[len - 1] == '"') {
+	    var_name_dup[len - 1] = '\0';
+      }
+
+      // Retrieve the environment variable value
+      char *val = getenv(var_name_dup);
+      free(var_name_dup); 
+
+      return val ? strdup(val) : strdup("");
+}
 
 ASTNode *create_node(NodeType type) {
       ASTNode *node = calloc(1, sizeof(ASTNode));
@@ -10,10 +45,27 @@ ASTNode *create_node(NodeType type) {
 ASTNode *parse_sequence(LexToken *tokens, int *pos);
 ASTNode *parse_pipe(LexToken *tokens, int *pos);
 ASTNode *parse_command(LexToken *tokens, int *pos);
+ASTNode *parse_logical(LexToken *tokens, int *pos);
+
+ASTNode *parse_logical(LexToken *tokens, int *pos) {
+    ASTNode *left = parse_pipe(tokens, pos);
+
+    while (tokens[*pos].type == TOK_AND || tokens[*pos].type == TOK_OR) {
+        TokenType op_type = tokens[*pos].type;
+        (*pos)++; // Consume the '&&' or '||'
+
+        ASTNode *parent = create_node(op_type == TOK_AND ? NODE_AND : NODE_OR);
+        parent->left = left;
+        parent->right = parse_pipe(tokens, pos);
+        left = parent;
+    }
+
+    return left;
+}
 
 //  ; and &
 ASTNode *parse_sequence(LexToken *tokens, int *pos) {
-      ASTNode *left = parse_pipe(tokens, pos);
+      ASTNode *left = parse_logical(tokens, pos);
     
       while (tokens[*pos].type == TOK_SEMI || tokens[*pos].type == TOK_BACKGROUND) {
 	      TokenType op = tokens[*pos].type;
@@ -68,7 +120,7 @@ ASTNode *parse_command(LexToken *tokens, int *pos) {
 		  node->args = realloc(node->args, cap * sizeof(char *));
 		  if (!node->args) { perror("realloc"); exit(EXIT_FAILURE); }
 	    }
-            node->args[node->arg_count++] = strdup(tokens[*pos].text);
+            node->args[node->arg_count++] = expand_env_var(tokens[*pos].text);
             (*pos)++;
         } else if (t == TOK_REDIR_IN) {
 	    (*pos)++;
@@ -76,7 +128,7 @@ ASTNode *parse_command(LexToken *tokens, int *pos) {
 		  fprintf(stderr, "Ssh: syntax error near unexpected token '<'\n");
 		  return node;
             }
-            node->input_file = strdup(tokens[*pos].text);
+            node->input_file = expand_env_var(tokens[*pos].text);
             (*pos)++;
         } else if (t == TOK_REDIR_OUT || t == TOK_REDIR_APPEND) {
 	    node->append = (t == TOK_REDIR_APPEND);
@@ -85,7 +137,7 @@ ASTNode *parse_command(LexToken *tokens, int *pos) {
 		  fprintf(stderr, "Ssh: syntax error near unexpected token '>' or '>>'\n");
 		  return node;
             }
-            node->output_file = strdup(tokens[*pos].text);
+            node->output_file = expand_env_var(tokens[*pos].text);
             (*pos)++;
         }
       }
@@ -132,5 +184,13 @@ void print_ast(ASTNode *node, int level) {
 	    printf("SEQUENCE (; / &)\n");
 	    print_ast(node->left, level + 1);
 	    if (node->right) print_ast(node->right, level + 1);
+      } else if (node->type == NODE_AND) { 
+	    printf("AND (&&)\n");
+	    print_ast(node->left, level + 1);
+	    print_ast(node->right, level + 1);
+      } else if (node->type == NODE_OR) {  
+	    printf("OR (||)\n");
+	    print_ast(node->left, level + 1);
+	    print_ast(node->right, level + 1);
       }
 }

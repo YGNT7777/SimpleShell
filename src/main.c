@@ -38,12 +38,11 @@ void get_prompt(char *prompt_buf, size_t max_len) {
 int main(void) {
       char *line;
       char prompt[4352];
-      int status = 1;
 
       init_shell_signals();
       init_completion();
 
-      while (status) {
+      while (1) {
 	    update_jobs();
 	    get_prompt(prompt, sizeof(prompt));
         
@@ -66,7 +65,7 @@ int main(void) {
 		  ASTNode *root = parse_sequence(tokens, &pos);
                 
 		  // Execute AST
-		  status = execute_ast(root);
+		  execute_ast(root);
                 
 		  free_ast(root);
             }

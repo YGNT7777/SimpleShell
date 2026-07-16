@@ -3,11 +3,11 @@
 const char *builtin_str[] = {
       "cd",
       "help",
-      "exit"
+      "exit",
       "jobs",
       "fg",
       "bg",
-      "kills"
+      "kill"
 };
 
 Job *first_job = NULL;
@@ -118,23 +118,43 @@ int execute_ast(ASTNode *node) {
 	      waitpid(pid2, NULL, 0);
 	      return 1;
       }
+      
+      // AND
+      if (node->type == NODE_AND) {
+	    int left_status = execute_ast(node->left);
+	    if (left_status == 0) {
+		  return execute_ast(node->right);
+	    }
+	    return left_status;
+      }
+
+      // OR
+      if (node->type == NODE_OR) {
+	    int left_status = execute_ast(node->left);
+	    if (left_status != 0) {
+		  return execute_ast(node->right);
+	    }
+	    return execute_ast(node->left);
+      }
 
       // COMMAND
       if (node->type == NODE_COMMAND) {
-	    if (node->arg_count == 0) return 1;
+	    if (node->arg_count == 0) return 0;
 	    // --- BUILTINS ---
 	    if (strcmp(node->args[0], "exit") == 0) {
-		  return 0;
+		  exit(0);
 	    }
 
 	    if (strcmp(node->args[0], "cd") == 0) {
 		  char *target = node->args[1] ? node->args[1] : getenv("HOME");
 		  if (!target) {
 			fprintf(stderr, "Ssh: HOME not set\n");
+			return 1;
 		  } else if (chdir(target) != 0) {
 			perror("Ssh: cd");
+			return 1;
 		  }
-		  return 1;
+		  return 0;
 	    }
 
 	    if (strcmp(node->args[0], "help") == 0) {
@@ -147,7 +167,7 @@ int execute_ast(ASTNode *node) {
 		  }
 
 		  printf("Use the man command for information on other programs.\n");
-		  return 1;
+		  return 0;
 	    }
 	    
 	    if (strcmp(node->args[0], "jobs") == 0) {
@@ -161,7 +181,7 @@ int execute_ast(ASTNode *node) {
 			     j->command);
 		      j = j->next;
 		  }
-		  return 1;
+		  return 0;
 	    }
 	    
 	    if (strcmp(node->args[0], "fg") == 0) {
@@ -195,9 +215,10 @@ int execute_ast(ASTNode *node) {
 		      // Reclaim terminal control
 		      tcsetpgrp(STDIN_FILENO, getpgrp());
 		  } else {
-		      fprintf(stderr, "Ssh: fg: no such job\n");
+			fprintf(stderr, "Ssh: fg: no such job\n");
+			return 1;
 		  }
-		  return 1;
+		  return 0;
 	    }
 
 	    if (strcmp(node->args[0], "bg") == 0) {
@@ -215,9 +236,10 @@ int execute_ast(ASTNode *node) {
 		      // Send resume signal in background
 		      kill(-j->pgid, SIGCONT);
 		  } else {
-		      fprintf(stderr, "Ssh: bg: no such job\n");
+			fprintf(stderr, "Ssh: bg: no such job\n");
+			return 1;
 		  }
-		  return 1;
+		  return 0;
 	    }
 	    
 	    if (strcmp(node->args[0], "kill") == 0) {
@@ -240,12 +262,14 @@ int execute_ast(ASTNode *node) {
 			      kill(-j->pgid, SIGCONT);
 			  }
 		      } else {
-			  perror("Ssh: kill");
+			perror("Ssh: kill");
+			return 1;
 		      }
 		  } else {
-		      fprintf(stderr, "Ssh: kill: no such job\n");
+			fprintf(stderr, "Ssh: kill: no such job\n");
+			return 1;
 		  }
-		  return 1;
+		  return 0;
 	      }
       // --- EXTERNAL COMMAND EXECUTION & REDIRECTION ---
       pid_t pid = fork();
@@ -296,14 +320,24 @@ int execute_ast(ASTNode *node) {
 		  if (WIFSTOPPED(status)) {
 			printf("\n[Process suspended: PID %d]\n", pid);
 			add_job(pid, JOB_STOPPED, node->args[0]);
+			tcsetpgrp(STDIN_FILENO, getpgrp());
+			return 1;
 		  }
 
 		  // Reclaim control of terminal for the shell
 		  tcsetpgrp(STDIN_FILENO, getpgrp());
+
+		  // Return the actual exit status of the child
+		  if (WIFEXITED(status)) {
+			return WEXITSTATUS(status); // Returns 0 for success, non-zero for error
+		  } else if (WIFSIGNALED(status)) {
+                    return 1; // Terminated by signal
+		  }
 	    } else {
 		  // Background task (&): Register it in our job list
 		  add_job(pid, JOB_RUNNING, node->args[0]);
 		  printf("[%d] %d\n", get_job_id_by_pid(pid), pid);
+		  return 0;
 	    }
       }
 
@@ -311,4 +345,3 @@ int execute_ast(ASTNode *node) {
 
     return 1;
 }
-

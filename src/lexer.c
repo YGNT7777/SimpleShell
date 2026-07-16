@@ -27,15 +27,27 @@ LexToken *lex(char *line, int *count)	{
 	    }
 
 	    else if (*p == '|') {
-		  add_token(&tokens, count, &capacity, TOK_PIPE, "|", 0);
-		  p++;
-		  continue;
+		  if (*(p + 1) == '|') {
+			add_token(&tokens, count, &capacity, TOK_OR, "||", 0);
+			p += 2;
+			continue;
+		  } else {
+			add_token(&tokens, count, &capacity, TOK_PIPE, "|", 0);
+			p++;
+			continue; 
+		  }
 	    }
 
 	    else if (*p == '&') {
-		  add_token(&tokens, count, &capacity, TOK_BACKGROUND, "&", 0);
-		  p++;
-		  continue;
+		  if (*(p + 1) == '&') {
+			add_token(&tokens, count, &capacity, TOK_AND, "&&", 0);
+			p += 2;
+			continue;
+		  } else {
+			add_token(&tokens, count, &capacity, TOK_BACKGROUND, "&", 0);
+			p++;
+			continue;
+		  }
 	    }
 
 	    else if (*p == ';') {

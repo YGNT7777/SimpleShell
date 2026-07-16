@@ -16,14 +16,16 @@ int Ssh_num_builtins(void);
 
 // --- Lexer Types ---
 typedef enum {
-      TOK_WORD,
-      TOK_PIPE,          // |
-      TOK_SEMI,          // ;
-      TOK_BACKGROUND,    // &
-      TOK_REDIR_IN,      // <
-      TOK_REDIR_OUT,     // >
-      TOK_REDIR_APPEND,  // >>
-      TOK_EOF
+	TOK_WORD,
+      	TOK_PIPE,          // |
+      	TOK_SEMI,          // ;
+      	TOK_BACKGROUND,    // &
+      	TOK_REDIR_IN,      // <
+      	TOK_REDIR_OUT,     // >
+      	TOK_REDIR_APPEND,  // >>
+       	TOK_AND,	   // &&
+	TOK_OR,		   // ||
+      	TOK_EOF
 } TokenType;
 
 typedef struct {
@@ -36,7 +38,9 @@ typedef struct {
 typedef enum {
       NODE_COMMAND,
       NODE_PIPE,
-      NODE_SEQUENCE
+      NODE_SEQUENCE,
+      NODE_AND,
+      NODE_OR
 } NodeType;
 
 typedef struct ASTNode {
