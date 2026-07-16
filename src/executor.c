@@ -1,4 +1,11 @@
 #include "executor.h"
+#include "lexer.h"
+#include "parser.h"
+
+#include <unistd.h>
+#include <sys/wait.h>
+
+static int in_subshell = 0;
 
 const char *builtin_str[] = {
       "cd",
@@ -71,6 +78,159 @@ int Ssh_num_builtins(void) {
       return sizeof(builtin_str) / sizeof(char *);
 }
 
+// Helper to find $( and extract the command inside.
+// Returns a dynamically allocated string of the inner command, or NULL if not found.
+char *extract_command_substitution(const char *arg, int *start_idx, int *end_idx) {
+      const char *start = strstr(arg, "$(");
+      if (!start) return NULL;
+
+      *start_idx = start - arg;
+    
+      // Find the matching closing parenthesis
+      int paren_depth = 1;
+      const char *p = start + 2;
+      while (*p && paren_depth > 0) {
+	    if (*p == '(') paren_depth++;
+	    else if (*p == ')') paren_depth--;
+	    if (paren_depth == 0) break;
+	    p++;
+      }
+
+      if (paren_depth != 0 || *p != ')') {
+	    fprintf(stderr, "Ssh: syntax error: unmatched ')' in command substitution\n");
+	    return NULL;
+      }
+
+      *end_idx = p - arg;
+
+      // Allocate and copy the inner command
+      int len = *end_idx - (*start_idx + 2);
+      char *inner_cmd = malloc(len + 1);
+      strncpy(inner_cmd, start + 2, len);
+      inner_cmd[len] = '\0';
+
+      return inner_cmd;
+}
+
+#define BUFFER_SIZE 4096
+
+// Executes an inner command and returns its stdout as a dynamically allocated string.
+char *capture_command_output(const char *cmd_str) {
+      int pipefd[2];
+      if (pipe(pipefd) == -1) {
+	    perror("Ssh: pipe failed");
+	    return strdup("");
+      }
+
+      pid_t pid = fork();
+      if (pid < 0) {
+	    perror("Ssh: fork failed");
+	    close(pipefd[0]);
+	    close(pipefd[1]);
+	    return strdup("");
+      }
+
+      if (pid == 0) {
+	    // --- CHILD PROCESS ---
+	    // Redirect stdout to the pipe
+	    dup2(pipefd[1], STDOUT_FILENO);
+	    close(pipefd[0]);
+	    close(pipefd[1]);
+
+	    in_subshell = 1; // Flagging that we inside subshell
+	    // Make a writable copy of the command string for the lexer
+	    char *writable_cmd = strdup(cmd_str);
+
+	    int count = 0;
+	    LexToken *tokens = lex(writable_cmd, &count);
+	    int pos = 0;
+	    ASTNode *root = parse_sequence(tokens, &pos);
+
+	    if (root) {
+		  // fprintf(stderr, "[DEBUG Subshell] Executing parsed AST for: %s\n", cmd_str);
+		  execute_ast(root);
+		  free_ast(root);
+	    }
+
+	    if (tokens) free(tokens);
+	    free(writable_cmd);
+	    exit(0); 
+      } 
+    
+      // --- PARENT PROCESS ---
+      close(pipefd[1]); // Parent doesn't write
+
+      // Read the output from the pipe
+      char buffer[BUFFER_SIZE];
+      size_t capacity = BUFFER_SIZE;
+      char *output = malloc(capacity);
+      size_t total_bytes = 0;
+      ssize_t bytes_read;
+
+      while ((bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+	    // fprintf(stderr, "[DEBUG Parent] Read %ld bytes from subshell\n", (long)bytes_read);
+	    if (total_bytes + bytes_read >= capacity) {
+		  capacity *= 2;
+		  output = realloc(output, capacity);
+	    }
+	    memcpy(output + total_bytes, buffer, bytes_read);
+	    total_bytes += bytes_read;
+      }
+      // fprintf(stderr, "[DEBUG Parent] Total bytes captured: %ld\n", (long)total_bytes);
+      close(pipefd[0]);
+      waitpid(pid, NULL, 0);
+
+      output[total_bytes] = '\0';
+
+      // Strip any trailing newlines (standard shell behavior)
+      while (total_bytes > 0 && (output[total_bytes - 1] == '\n' || output[total_bytes - 1] == '\r')) {
+	    output[total_bytes - 1] = '\0';
+	    total_bytes--;
+      }
+
+      return output;
+}
+
+void expand_command_substitution(ASTNode *node) {
+      for (int i = 0; i < node->arg_count; i++) {
+	    // fprintf(stderr, "[DEBUG Expand] Checking arg[%d]: '%s'\n", i, node->args[i]);
+	    int start_idx, end_idx;
+	    char *inner_cmd = extract_command_substitution(node->args[i], &start_idx, &end_idx);
+        
+	    if (inner_cmd) {
+		  // Capture the stdout of the inner command
+		  char *captured_output = capture_command_output(inner_cmd);
+
+		  // Reconstruct the argument string with the substitution replaced
+		  int prefix_len = start_idx;
+		  int suffix_len = strlen(node->args[i]) - end_idx - 1;
+		  int new_len = prefix_len + strlen(captured_output) + suffix_len;
+
+		  char *new_arg = malloc(new_len + 1);
+		  
+		  // Copy prefix (before '$(')
+		  strncpy(new_arg, node->args[i], prefix_len);
+		  new_arg[prefix_len] = '\0';
+		  
+		  // Concatenate captured output
+		  strcat(new_arg, captured_output);
+		  
+		  // Concatenate suffix (after ')')
+		  strcat(new_arg, node->args[i] + end_idx + 1);
+
+		  // Free the old argument and swap in the new expanded one
+		  free(node->args[i]);
+		  node->args[i] = new_arg;
+
+		  free(inner_cmd);
+		  free(captured_output);
+		  
+		  // Recursively check this argument again in case there are multiple $(...) in one arg
+		  i--; 
+	      }
+	  }
+}
+
 int execute_ast(ASTNode *node) {
       if (!node) return 1;
 
@@ -140,6 +300,9 @@ int execute_ast(ASTNode *node) {
       // COMMAND
       if (node->type == NODE_COMMAND) {
 	    if (node->arg_count == 0) return 0;
+
+	    expand_command_substitution(node);
+
 	    // --- BUILTINS ---
 	    if (strcmp(node->args[0], "exit") == 0) {
 		  exit(0);
@@ -276,16 +439,16 @@ int execute_ast(ASTNode *node) {
         if (pid == 0) {
             // --- CHILD PROCESS ---
             
-            // Establish process group. 
-            // If pgid is 0, the child uses its own PID as the process group leader.
-            pid_t pgid = getpid();
-            setpgid(0, pgid);
+	    // Establish process group and terminal control if NOT in a subshell
+	    if (!in_subshell) {
+		  pid_t pgid = getpid();
+		  setpgid(0, pgid);
+		  // ONLY claim terminal control if STDIN is actually a terminal (tty)
+		  if (!node->background && isatty(STDIN_FILENO)) {
+			tcsetpgrp(STDIN_FILENO, pgid);
+		  }
+	    }
             
-            // If it's a foreground job, claim terminal control
-            if (!node->background) {
-                tcsetpgrp(STDIN_FILENO, pgid);
-            }
-
             // Restore default signal handlers so the child CAN be killed/suspended
             signal(SIGINT, SIG_DFL);
             signal(SIGTSTP, SIG_DFL);
@@ -323,24 +486,28 @@ int execute_ast(ASTNode *node) {
                 close(fd_out);
             }
 
+	    //fprintf(stderr, "[DEBUG Grandchild] Executing: %s with in_subshell=%d\n", node->args[0], in_subshell);
             if (execvp(node->args[0], node->args) == -1) {
                 perror("Ssh");
             }
             exit(EXIT_FAILURE);
-        } 
-        else if (pid < 0) {
-            perror("Ssh: fork");
-        } 
-        else {
-            // --- PARENT PROCESS ---
-            
-            // Set process group in parent too (avoids a race condition)
-            setpgid(pid, pid);
+      } else if (pid < 0) {
+	    perror("Ssh: fork");
+      } 
+     
+      else {
+	    // --- PARENT PROCESS ---
+            // Avoid setting process groups or touching terminal controls if in subshell
+            if (!in_subshell) {
+                setpgid(pid, pid);
+            }
 
-            if (!node->background) {
-		  // Foreground task: Give it terminal control
-		  tcsetpgrp(STDIN_FILENO, pid);
-                
+            if (!node->background && !in_subshell) {
+		  // Foreground task: Only give it terminal control if STDIN is a tty
+		  if (isatty(STDIN_FILENO)) {
+			tcsetpgrp(STDIN_FILENO, pid);
+		  }
+
 		  // Wait for foreground job to finish OR stop (Ctrl+Z)
 		  int status;
 		  waitpid(pid, &status, WUNTRACED);
@@ -349,24 +516,35 @@ int execute_ast(ASTNode *node) {
 		  if (WIFSTOPPED(status)) {
 			printf("\n[Process suspended: PID %d]\n", pid);
 			add_job(pid, JOB_STOPPED, node->args[0]);
-			tcsetpgrp(STDIN_FILENO, getpgrp());
+			if (isatty(STDIN_FILENO)) {
+			      tcsetpgrp(STDIN_FILENO, getpgrp());
+			}
 			return 1;
 		  }
 
 		  // Reclaim control of terminal for the shell
-		  tcsetpgrp(STDIN_FILENO, getpgrp());
+		  if (isatty(STDIN_FILENO)) {
+			tcsetpgrp(STDIN_FILENO, getpgrp());
+		  }
 
 		  // Return the actual exit status of the child
 		  if (WIFEXITED(status)) {
-			return WEXITSTATUS(status); // Returns 0 for success, non-zero for error
+			return WEXITSTATUS(status); 
 		  } else if (WIFSIGNALED(status)) {
-                    return 1; // Terminated by signal
+			return 1; 
 		  }
 	    } else {
-		  // Background task (&): Register it in our job list
-		  add_job(pid, JOB_RUNNING, node->args[0]);
-		  printf("[%d] %d\n", get_job_id_by_pid(pid), pid);
-		  return 0;
+		  if (in_subshell) {
+			int status;
+			waitpid(pid, &status, 0);
+			if(WIFEXITED(status)) return WEXITSTATUS(status);
+			return 1;
+		  } else {
+			// Background task (&): Register it in our job list
+			add_job(pid, JOB_RUNNING, node->args[0]);
+			printf("[%d] %d\n", get_job_id_by_pid(pid), pid);
+			return 0;
+		  }
 	    }
       }
 

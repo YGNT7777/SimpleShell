@@ -17,6 +17,11 @@ static char *expand_env_var(const char *arg) {
 	    return strdup(arg); // Standard string, return as-is
       }
 
+      // If it's a command substitution $(...), do NOT expand as env var!
+      if (start[1] == '(') {
+          return strdup(arg);
+      }
+
       // Extract the variable name
       const char *var_name = start + 1;
       char *var_name_dup = strdup(var_name);

@@ -96,7 +96,7 @@ LexToken *lex(char *line, int *count)	{
 	      char *start = p;
 	      while (*p && !isspace((unsigned char)*p) && 
 		     *p != '|' && *p != '&' && *p != ';' && *p != '<' && *p != '>') {
-		  p++;
+			p++;
 	      }
 	      size_t len = p - start;
 	      char *buf = strndup(start, len);
