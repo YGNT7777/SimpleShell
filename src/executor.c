@@ -182,6 +182,12 @@ char *capture_command_output(const char *cmd_str) {
 	    close(pipefd[1]);
 
 	    in_subshell = 1; // Flagging that we inside subshell
+
+	    // Ignore interactive terminal signals inside command substitution
+	    // so the subshell doesn't get suspended by background TTY writes
+	    signal(SIGTTIN, SIG_IGN);
+	    signal(SIGTTOU, SIG_IGN);
+
 	    // Make a writable copy of the command string for the lexer
 	    char *writable_cmd = strdup(cmd_str);
 
@@ -191,7 +197,7 @@ char *capture_command_output(const char *cmd_str) {
 	    ASTNode *root = parse_sequence(tokens, &pos);
 
 	    if (root) {
-		  // fprintf(stderr, "[DEBUG Subshell] Executing parsed AST for: %s\n", cmd_str);
+		  //fprintf(stderr, "[DEBUG Subshell] Executing parsed AST for: %s\n", cmd_str);
 		  execute_ast(root);
 		  free_ast(root);
 	    }
@@ -275,8 +281,56 @@ void expand_command_substitution(ASTNode *node) {
 	  }
 }
 
+// Scans an argument array and evaluates environment variables ($VAR)
+void expand_env_variables(ASTNode *node) {
+      for (int i = 0; i < node->arg_count; i++) {
+	    char *arg = node->args[i];
+            char new_arg[BUFFER_SIZE] = {0};
+            int new_len = 0;
+            int len = strlen(arg);
+
+            for (int j = 0; j < len; j++) {
+                  // Catch environmental marker, make sure it is not part of $( command_sub )
+                  if (arg[j] == '$' && j + 1 < len && arg[j+1] != '(') {
+                        j++;
+                        char var_name[256] = {0};
+                        int v_idx = 0;
+
+                        // Isolate alphanumeric variable key names
+                        while (j < len && (isalnum((unsigned char)arg[j]) || arg[j] == '_')) {
+                              if (v_idx < 255) {
+                                    var_name[v_idx++] = arg[j];
+                              }
+                              j++;
+                        }
+                        j--; // Offset loop iteration jump
+
+                        char *val = getenv(var_name);
+                        if (val) {
+                              size_t val_len = strlen(val);
+                              if (new_len + val_len < BUFFER_SIZE - 1) {
+                                    strcpy(new_arg + new_len, val);
+                                    new_len += val_len;
+                              }
+                        }
+                  } else {
+                        if (new_len < BUFFER_SIZE - 1) {
+                              new_arg[new_len++] = arg[j];
+                        }
+                  }
+            }
+            new_arg[new_len] = '\0';
+            free(node->args[i]);
+            node->args[i] = strdup(new_arg);
+      }
+}
+
 int execute_ast(ASTNode *node) {
       if (!node) return 1;
+
+      /*for (int d = 0; d < node->arg_count; d++) {
+	    fprintf(stderr, "[DEBUG ARGS] args[%d] = '%s'\n", d, node->args[d]);
+      }*/
 
       // SUBSHELL ()
       if (node->type == NODE_SUBSHELL) {
@@ -347,6 +401,7 @@ int execute_ast(ASTNode *node) {
 	    pid_t pid1 = fork();
 	    if (pid1 == 0) {
 		  // Child 1 Write pipe
+		  in_subshell = 1;
 		  dup2(pipefd[1], STDOUT_FILENO);
 		  close(pipefd[0]); 
 		  close(pipefd[1]);
@@ -357,19 +412,30 @@ int execute_ast(ASTNode *node) {
 	    pid_t pid2 = fork();
 	    if (pid2 == 0) {
 		  // Child 2 Read pipe
+		  in_subshell = 1;
 		  dup2(pipefd[0], STDIN_FILENO);
 		  close(pipefd[0]); 
 		  close(pipefd[1]);
-		  execute_ast(node->right);
-		  exit(EXIT_FAILURE);
-	      }
+		  int status = execute_ast(node->right);
+		  exit(status);
+	    }
 
-	      //  Parent closes pipes and waits for childrens 
-	      close(pipefd[0]); 
-	      close(pipefd[1]);
-	      waitpid(pid1, NULL, 0);
-	      waitpid(pid2, NULL, 0);
-	      return 1;
+	    //  Parent closes pipes and waits for childrens 
+	    close(pipefd[0]); 
+	    close(pipefd[1]);
+      
+	    int status1;
+	    int status2;
+	    waitpid(pid1, &status1, 0);
+	    waitpid(pid2, &status2, 0);
+
+	    // Return the actual exit status of the right-most command (pid2)
+            if (WIFEXITED(status2)) {
+                  return WEXITSTATUS(status2);
+            } else if (WIFSIGNALED(status2)) {
+                  return 128 + WTERMSIG(status2); // Standard shell exit code for signals
+            }
+            return 1;
       }
       
       // AND
@@ -387,7 +453,7 @@ int execute_ast(ASTNode *node) {
 	    if (left_status != 0) {
 		  return execute_ast(node->right);
 	    }
-	    return execute_ast(node->left);
+	    return left_status;
       }
 
       // COMMAND
@@ -395,6 +461,7 @@ int execute_ast(ASTNode *node) {
 	    if (node->arg_count == 0) return 0;
 
 	    expand_command_substitution(node);
+	    expand_env_variables(node);
 
 	    // --- BUILTINS ---
 	    if (strcmp(node->args[0], "exit") == 0) {
@@ -411,6 +478,28 @@ int execute_ast(ASTNode *node) {
 			return 1;
 		  }
 		  return 0;
+	    }
+
+	    if (strchr(node->args[0], '=') != NULL) {
+	          char *arg = node->args[0];
+	          char *eq = strchr(arg, '=');
+	          *eq = '\0';
+	          char *key = arg;
+	          char *value = eq + 1;
+
+	          // Strip wrapping quotes around assigned text values if present
+	          size_t val_len = strlen(value);
+	          if (val_len >= 2 && ((value[0] == '"' && value[val_len - 1] == '"') || 
+	                               (value[0] == '\'' && value[val_len - 1] == '\''))) {
+	                value[val_len - 1] = '\0';
+	                value++;
+	          }
+
+	          if (setenv(key, value, 1) != 0) {
+	                perror("Ssh: setenv");
+	                return 1;
+	          }
+	          return 0; // Local assignment completed, skip spawning a child process
 	    }
 
 	    if (strcmp(node->args[0], "help") == 0) {

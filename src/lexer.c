@@ -84,6 +84,31 @@ LexToken *lex(char *line, int *count)	{
 		  p++; 
 		  continue;
 	    }
+	    
+	    if (*p == '$' && *(p + 1) == '(') {
+		  char *start = p;
+		  int paren_depth = 0;
+
+		  // Scan forward to find the matching closing parenthesis
+		  while (*p != '\0') {
+			if (*p == '(') paren_depth++;
+			if (*p == ')') {
+			      paren_depth--;
+			      if (paren_depth == 0) {
+				    p++;
+				    break;
+			      }
+			}
+		  p++;
+		  }
+		  
+		  size_t length = p - start;
+		  char *sub_token = strndup(start, length);
+
+		  add_token(&tokens, count, &capacity, TOK_WORD, sub_token, 0);
+		  free(sub_token);
+		  continue;
+	    }
 
 	    if (*p == '"' || *p == '\'') {
 		  char quote = *p;
