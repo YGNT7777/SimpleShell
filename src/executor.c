@@ -1,7 +1,7 @@
 #include "executor.h"
 #include "lexer.h"
 #include "parser.h"
-
+#include <glob.h>
 #include <unistd.h>
 #include <sys/wait.h>
 
@@ -76,6 +76,50 @@ void update_jobs(void) {
 
 int Ssh_num_builtins(void) {
       return sizeof(builtin_str) / sizeof(char *);
+}
+
+// Expansion Helper Function
+// Scan an array of arguments, expand any that contain wildcards, and return a newly allocated, larger array
+static char **expand_wildcards(char **args, int arg_count, int *new_count) {
+      // Start with a reasonable capacity for the expanded arguments
+      int capacity = arg_count + 8;
+      char **expanded_args = malloc(sizeof(char *) * capacity);
+      int count = 0;
+
+      for (int i = 0; i < arg_count; i++) {
+	    // Check if the argument contains a wildcard character
+	    if (strchr(args[i], '*') || strchr(args[i], '?')) {
+		  glob_t glob_result;
+		  // GLOB_NOCHECK returns the pattern itself if no files match (like bash)
+		  int ret = glob(args[i], GLOB_NOCHECK | GLOB_TILDE, NULL, &glob_result);
+            
+		  if (ret == 0) {
+			// Resize expanded array if necessary to fit all matches
+			while (count + (int)glob_result.gl_pathc >= capacity) {
+			      capacity *= 2;
+			      expanded_args = realloc(expanded_args, sizeof(char *) * capacity);
+			}
+                
+			// Copy all matched paths into our new argument list
+			for (size_t j = 0; j < glob_result.gl_pathc; j++) {
+			      expanded_args[count++] = strdup(glob_result.gl_pathv[j]);
+			}
+			globfree(&glob_result);
+			continue;
+		  }
+	    }
+        
+	    // If it's a regular argument or glob failed, just copy it over
+	    if (count >= capacity - 1) {
+		  capacity *= 2;
+		  expanded_args = realloc(expanded_args, sizeof(char *) * capacity);
+	    }
+	    expanded_args[count++] = strdup(args[i]);
+      }
+
+      expanded_args[count] = NULL; // Null-terminate the new array
+      *new_count = count;
+      return expanded_args;
 }
 
 // Helper to find $( and extract the command inside.
@@ -535,10 +579,23 @@ int execute_ast(ASTNode *node) {
                 close(fd_out);
             }
 
+	    // Expand wildcards
+	    int final_arg_count = 0;
+            char **final_args = expand_wildcards(node->args, node->arg_count, &final_arg_count);
+
+	    execvp(final_args[0], final_args);
+              
+            // If execvp returns, it failed
+            perror(final_args[0]);
+              
+            // Clean up the temporary expanded array on failure
+            for (int i = 0; i < final_arg_count; i++) free(final_args[i]);
+            free(final_args);
+
 	    //fprintf(stderr, "[DEBUG Grandchild] Executing: %s with in_subshell=%d\n", node->args[0], in_subshell);
-            if (execvp(node->args[0], node->args) == -1) {
+            /*if (execvp(node->args[0], node->args) == -1) {
                 perror("Ssh");
-            }
+            }*/
             exit(EXIT_FAILURE);
       } else if (pid < 0) {
 	    perror("Ssh: fork");
