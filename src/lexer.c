@@ -55,6 +55,18 @@ LexToken *lex(char *line, int *count)	{
 		  p++;
 		  continue;
 	    }
+      
+	    else if (*p == '(') {
+		  add_token(&tokens, count, &capacity, TOK_LPAREN, "(", 0);
+		  p++;
+		  continue;
+	    }
+
+	    else if (*p == ')') {
+		  add_token(&tokens, count, &capacity, TOK_RPAREN, ")", 0);
+		  p++;
+		  continue;
+	    }
 
 	    else if (*p == '>') {
 		  if (*(p + 1) == '>') {
@@ -95,7 +107,7 @@ LexToken *lex(char *line, int *count)	{
 	      // (TOK_WORD)
 	      char *start = p;
 	      while (*p && !isspace((unsigned char)*p) && 
-		     *p != '|' && *p != '&' && *p != ';' && *p != '<' && *p != '>') {
+		     *p != '|' && *p != '&' && *p != ';' && *p != '<' && *p != '>' && *p != '(' && *p != ')' ) {
 			p++;
 	      }
 	      size_t len = p - start;
@@ -125,7 +137,9 @@ const char* token_type_to_string(TokenType type) {
 	    case TOK_BACKGROUND:     return "BACKGROUND (&)";
 	    case TOK_REDIR_IN:       return "REDIR_IN (<)";
 	    case TOK_REDIR_OUT:      return "REDIR_OUT (>)";
-	    case TOK_REDIR_APPEND:   return "REDIR_APPEND (>>)";
+	    case TOK_REDIR_APPEND:   return "REDIR_APPEND (>>)"; 
+	    case TOK_LPAREN:	     return "LPAREN (()";
+	    case TOK_RPAREN:	     return "RPAREN ())";
 	    case TOK_EOF:            return "EOF";
 	    default:                 return "UNKNOWN";
       }

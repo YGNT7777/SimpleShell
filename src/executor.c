@@ -234,6 +234,55 @@ void expand_command_substitution(ASTNode *node) {
 int execute_ast(ASTNode *node) {
       if (!node) return 1;
 
+      // SUBSHELL ()
+      if (node->type == NODE_SUBSHELL) {
+	    pid_t pid = fork();
+	    if (pid == 0) {
+		  // --- CHILD PROCESS ---
+		  in_subshell = 1;
+
+		  // Apply redirections for the entire subshell group
+		  if (node->input_file) {
+			int fd_in = open(node->input_file, O_RDONLY);
+			if (fd_in < 0) {
+			      perror("Ssh: open input file");
+			      exit(EXIT_FAILURE);
+			}
+			dup2(fd_in, STDIN_FILENO);
+			close(fd_in);
+		  }
+
+	    if (node->output_file) {
+		  int flags = O_WRONLY | O_CREAT;
+		  if (node->append) flags |= O_APPEND;
+                  else flags |= O_TRUNC;
+                  
+                  int fd_out = open(node->output_file, flags, 0644);
+                  if (fd_out < 0) {
+			perror("Ssh: open output file");
+			exit(EXIT_FAILURE);
+                  }
+		  dup2(fd_out, STDOUT_FILENO);
+                  close(fd_out);
+	    }
+
+            // Execute the inner sequence
+            int status = execute_ast(node->left);
+            exit(status);
+	    } else if (pid < 0) {
+		  perror("Ssh: fork subshell failed");
+		  return 1;
+	    } else {
+		  // --- PARENT PROCESS ---
+		  int status;
+		  waitpid(pid, &status, 0);
+		  if (WIFEXITED(status)) {
+			return WEXITSTATUS(status);
+		  }
+		  return 1;
+	    }
+      }
+
       // SEQUENCE (; or &)
       if (node->type == NODE_SEQUENCE) {
 	    int status = execute_ast(node->left);

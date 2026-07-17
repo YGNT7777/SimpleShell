@@ -49,6 +49,7 @@ ASTNode *create_node(NodeType type) {
 
 ASTNode *parse_sequence(LexToken *tokens, int *pos);
 ASTNode *parse_pipe(LexToken *tokens, int *pos);
+ASTNode *parse_primary(LexToken *tokens, int *pos);
 ASTNode *parse_command(LexToken *tokens, int *pos);
 ASTNode *parse_logical(LexToken *tokens, int *pos);
 
@@ -92,12 +93,54 @@ ASTNode *parse_sequence(LexToken *tokens, int *pos) {
       return left;
 }
 
+ASTNode *parse_primary(LexToken *tokens, int *pos) {
+      if (tokens[*pos].type == TOK_LPAREN) {
+	    (*pos)++; // Consume '('
+
+	    ASTNode *node = create_node(NODE_SUBSHELL);
+	    node->left = parse_sequence(tokens, pos);
+
+	    if (tokens[*pos].type != TOK_RPAREN) {
+		  fprintf(stderr, "Ssh: syntax error: unmatched '('\n");
+		  return node;
+	    }
+	    (*pos)++; // Consume ')'
+
+	    // Support redirections on the entire subshell: (cd test && ls) > file.txt
+	    while (tokens[*pos].type == TOK_REDIR_IN || 
+		  tokens[*pos].type == TOK_REDIR_OUT || 
+		  tokens[*pos].type == TOK_REDIR_APPEND) {
+			TokenType t = tokens[*pos].type;
+			if (t == TOK_REDIR_IN) {
+			      (*pos)++;
+			      if (tokens[*pos].type != TOK_WORD) {
+				    fprintf(stderr, "Ssh: syntax error near unexpected token '<'\n");
+				    return node;
+			       }
+			      node->input_file = expand_env_var(tokens[*pos].text);
+			      (*pos)++;
+			} else if (t == TOK_REDIR_OUT || t == TOK_REDIR_APPEND) {
+			      node->append = (t == TOK_REDIR_APPEND);
+			      (*pos)++;
+			      if (tokens[*pos].type != TOK_WORD) {
+				    fprintf(stderr, "Ssh: syntax error near unexpected token '>' or '>>'\n");
+				    return node;
+			      }
+			      node->output_file = expand_env_var(tokens[*pos].text);
+			      (*pos)++;
+			}
+	    }
+	    return node;
+      }
+      return parse_command(tokens, pos);
+}
+
 //  |
 ASTNode *parse_pipe(LexToken *tokens, int *pos) {
-      ASTNode *left = parse_command(tokens, pos);
+      ASTNode *left = parse_primary(tokens, pos);
     
       while (tokens[*pos].type == TOK_PIPE) {
-	    (*pos)++; // Προσπέραση του |
+	    (*pos)++; // Bypass |
 	    ASTNode *node = create_node(NODE_PIPE);
 	    node->left = left;
 	    node->right = parse_pipe(tokens, pos);
@@ -159,10 +202,14 @@ void free_ast(ASTNode *node) {
 	    free(node->args);
 	    if (node->input_file) free(node->input_file);
 	    if (node->output_file) free(node->output_file);
-	  } else {
+      } else if ( node->type == NODE_SUBSHELL) {
+	    free_ast(node->left);
+	    if (node->input_file) free(node->input_file);
+	    if (node->output_file) free(node->output_file);
+      } else {
 	    free_ast(node->left);
 	    free_ast(node->right);
-	  }
+      }
       free(node);
 }
 
@@ -197,5 +244,15 @@ void print_ast(ASTNode *node, int level) {
 	    printf("OR (||)\n");
 	    print_ast(node->left, level + 1);
 	    print_ast(node->right, level + 1);
+      } else if (node->type == NODE_OR) {  
+	    printf("OR (||)\n");
+	    print_ast(node->left, level + 1);
+	    print_ast(node->right, level + 1);
+      } else if (node->type == NODE_SUBSHELL) {
+	    printf("SUBSHELL ()\n");
+	    print_ast(node->left, level + 1);
+	    if (node->input_file) printf("< %s ", node->input_file);
+	    if (node->output_file) printf("%s %s ", node->append ? ">>" : ">", node->output_file);
+	    printf("\n");
       }
 }
