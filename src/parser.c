@@ -200,16 +200,15 @@ void free_ast(ASTNode *node) {
 		  free(node->args[i]);
 	    }
 	    free(node->args);
-	    if (node->input_file) free(node->input_file);
-	    if (node->output_file) free(node->output_file);
-      } else if ( node->type == NODE_SUBSHELL) {
-	    free_ast(node->left);
-	    if (node->input_file) free(node->input_file);
-	    if (node->output_file) free(node->output_file);
-      } else {
-	    free_ast(node->left);
-	    free_ast(node->right);
       }
+
+      free_ast(node->left);
+      free_ast(node->right);
+      
+      
+      if (node->input_file) free(node->input_file);
+      if (node->output_file) free(node->output_file);
+
       free(node);
 }
 
@@ -238,10 +237,6 @@ void print_ast(ASTNode *node, int level) {
 	    if (node->right) print_ast(node->right, level + 1);
       } else if (node->type == NODE_AND) { 
 	    printf("AND (&&)\n");
-	    print_ast(node->left, level + 1);
-	    print_ast(node->right, level + 1);
-      } else if (node->type == NODE_OR) {  
-	    printf("OR (||)\n");
 	    print_ast(node->left, level + 1);
 	    print_ast(node->right, level + 1);
       } else if (node->type == NODE_OR) {  
