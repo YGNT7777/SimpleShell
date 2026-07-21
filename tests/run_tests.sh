@@ -153,8 +153,12 @@ assert_cmd "Glob: Match Multiple C Files" \
            "ls ../src/*.c" \
            "executor.c" 
 
-assert_cmd "Glob: Match Single Character Query" \
-           "ls ../src/execut?.c" \
+assert_cmd "Glob: Match Double Character Query" \
+           "ls ../src/execut?r.c" \
+           "executor.c"
+
+assert_cmd "Glob: Match Double Character Query" \
+           "ls ../src/execut??.c" \
            "executor.c"
 
 assert_cmd "Glob: Fallback on No Match (GLOB_NOCHECK)" \

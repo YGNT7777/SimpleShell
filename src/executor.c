@@ -87,8 +87,8 @@ static char **expand_wildcards(char **args, int arg_count, int *new_count) {
       int count = 0;
 
       for (int i = 0; i < arg_count; i++) {
-	    // Check if the argument contains a wildcard character
-	    if (strchr(args[i], '*') || strchr(args[i], '?')) {
+	    // Check for any wildcard pattern character (*, ?, or [])
+            if (strpbrk(args[i], "*?[")) {
 		  glob_t glob_result;
 		  // GLOB_NOCHECK returns the pattern itself if no files match (like bash)
 		  int ret = glob(args[i], GLOB_NOCHECK | GLOB_TILDE, NULL, &glob_result);

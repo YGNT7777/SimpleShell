@@ -1,13 +1,4 @@
-=== SimpleShell Test Run: Sat Jul 18 17:10:12 EEST 2026 ===
------------------------------------
-Test: Glob: Match Single Character Query
-Input: ls ../src/execut?.c
-Expected string: executor.c
-Actual Output:
-Natsos@2023144 # /home/Natsos/SimpleShell/tests > ls ../src/execut?.c
-ls: cannot access '../src/execut?.c': No such file or directory
-Natsos@2023144 # /home/Natsos/SimpleShell/tests > 
------------------------------------
+=== SimpleShell Test Run: Tue Jul 21 11:47:46 EEST 2026 ===
 -----------------------------------
 Test: Cmd Sub: Strip Trailing Newlines
 Input: echo A$(printf 'B\n\n\n')C
