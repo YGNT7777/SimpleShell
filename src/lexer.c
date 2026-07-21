@@ -56,18 +56,6 @@ LexToken *lex(char *line, int *count)	{
 		  continue;
 	    }
       
-	    else if (*p == '(') {
-		  add_token(&tokens, count, &capacity, TOK_LPAREN, "(", 0);
-		  p++;
-		  continue;
-	    }
-
-	    else if (*p == ')') {
-		  add_token(&tokens, count, &capacity, TOK_RPAREN, ")", 0);
-		  p++;
-		  continue;
-	    }
-
 	    else if (*p == '>') {
 		  if (*(p + 1) == '>') {
 			add_token(&tokens, count, &capacity, TOK_REDIR_APPEND, ">>", 0);
@@ -85,31 +73,6 @@ LexToken *lex(char *line, int *count)	{
 		  continue;
 	    }
 	    
-	    if (*p == '$' && *(p + 1) == '(') {
-		  char *start = p;
-		  int paren_depth = 0;
-
-		  // Scan forward to find the matching closing parenthesis
-		  while (*p != '\0') {
-			if (*p == '(') paren_depth++;
-			if (*p == ')') {
-			      paren_depth--;
-			      if (paren_depth == 0) {
-				    p++;
-				    break;
-			      }
-			}
-		  p++;
-		  }
-		  
-		  size_t length = p - start;
-		  char *sub_token = strndup(start, length);
-
-		  add_token(&tokens, count, &capacity, TOK_WORD, sub_token, 0);
-		  free(sub_token);
-		  continue;
-	    }
-
 	    if (*p == '"' || *p == '\'') {
 		  char quote = *p;
 		  int quoted_type = (quote == '"') ? 2 : 1;
@@ -127,19 +90,65 @@ LexToken *lex(char *line, int *count)	{
 		  free(buf);
 		  p++; // skip closing quote
 		  continue;
-	      }
+	    }
 
-	      // (TOK_WORD)
-	      char *start = p;
-	      while (*p && !isspace((unsigned char)*p) && 
-		     *p != '|' && *p != '&' && *p != ';' && *p != '<' && *p != '>' && *p != '(' && *p != ')' ) {
-			p++;
-	      }
-	      size_t len = p - start;
-	      char *buf = strndup(start, len);
-	      add_token(&tokens, count, &capacity, TOK_WORD, buf, 0);
-	      free(buf);
-	  }
+	    // (TOK_WORD)
+	    char *start = p;
+	    while (*p && !isspace((unsigned char)*p) && 
+		  *p != '|' && *p != '&' && *p != ';' && *p != '<' && *p != '>' && *p != '(' && *p != ')' ) 
+	    {
+		  // If we hit $(, scan forward until the matching right parenthesis
+		  if (*p == '$' && *(p + 1) == '(') {
+			p += 2;
+			int depth = 1;
+			while (*p && depth > 0) {
+			      if (*p == '\\' && *(p + 1) != '\0') {
+				    p += 2; // skip escaped chars
+				    continue;
+			      }
+			      if (*p == '\'' || *p == '"') { // skip quoted sections inside $(...)
+				    char q = *p++;
+				    while (*p && *p != q) {
+					  if (*p == '\\' && *(p + 1) != '\0') p += 2;
+					  else p++;
+				    }
+				    if (*p == q) p++;
+				    continue;
+			      }	
+			      if (*p == '(') depth++;
+			      else if (*p == ')') depth--;
+			      p++;
+			}
+			continue;
+		  }
+
+		  // Bare parenthesis outside $(...) terminates the current word token
+		  if (*p == '(' || *p == ')') {
+			break;
+		  }
+
+		  p++;
+	    }
+	    if (p > start) {
+		  size_t len = p - start;
+		  char *buf = strndup(start, len);
+		  add_token(&tokens, count, &capacity, TOK_WORD, buf, 0);
+		  free(buf);
+		  continue;
+	    }
+
+	    // Handle standalone ( or ) operator tokens when not inside $(...)
+	    if (*p == '(') {
+		  add_token(&tokens, count, &capacity, TOK_LPAREN, "(", 0);
+		  p++;
+		  continue;
+	    }
+	    if (*p == ')') {
+		  add_token(&tokens, count, &capacity, TOK_RPAREN, ")", 0);
+		  p++;
+		  continue;
+	    }
+      }
 
       add_token(&tokens, count, &capacity, TOK_EOF, NULL, 0);
       return tokens;

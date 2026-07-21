@@ -121,6 +121,59 @@ static char **expand_wildcards(char **args, int arg_count, int *new_count) {
       *new_count = count;
       return expanded_args;
 }
+// Helper to evaluate a raw command string in a subshell
+int execute_subshell_string(const char *cmd_str) {
+      char *writable_cmd = strdup(cmd_str);
+      if (!writable_cmd) return 1;
+
+      int count = 0;
+      LexToken *tokens = lex(writable_cmd, &count);
+      int pos = 0;
+      ASTNode *root = parse_sequence(tokens, &pos);
+      int status = 0;
+
+      if (root) {
+	    status = execute_ast(root);
+	    free_ast(root);
+      }
+
+      if (tokens) free(tokens);
+      free(writable_cmd);
+      return status;
+}
+
+// Applies file redirections specified in an AST node.
+// Returns 0 on success, -1 on failure.
+static int setup_redirections(ASTNode *node) {
+      if (node->input_file) {
+	    int fd_in = open(node->input_file, O_RDONLY);
+	    if (fd_in < 0) {
+		  perror("Ssh: open input file");
+		  return -1;
+	    }
+	    dup2(fd_in, STDIN_FILENO);
+	    close(fd_in);
+      }
+
+      if (node->output_file) {
+	    int flags = O_WRONLY | O_CREAT;
+	    if (node->append) {
+		  flags |= O_APPEND;
+	    } else {
+		  flags |= O_TRUNC;
+	    }
+
+	    int fd_out = open(node->output_file, flags, 0644);
+	    if (fd_out < 0) {
+		  perror("Ssh: open output file");
+		  return -1;
+	    }
+	    dup2(fd_out, STDOUT_FILENO);
+	    close(fd_out);
+      }
+
+      return 0;
+}
 
 // Helper to find $( and extract the command inside.
 // Returns a dynamically allocated string of the inner command, or NULL if not found.
@@ -188,43 +241,26 @@ char *capture_command_output(const char *cmd_str) {
 	    signal(SIGTTIN, SIG_IGN);
 	    signal(SIGTTOU, SIG_IGN);
 
-	    // Make a writable copy of the command string for the lexer
-	    char *writable_cmd = strdup(cmd_str);
-
-	    int count = 0;
-	    LexToken *tokens = lex(writable_cmd, &count);
-	    int pos = 0;
-	    ASTNode *root = parse_sequence(tokens, &pos);
-
-	    if (root) {
-		  //fprintf(stderr, "[DEBUG Subshell] Executing parsed AST for: %s\n", cmd_str);
-		  execute_ast(root);
-		  free_ast(root);
-	    }
-
-	    if (tokens) free(tokens);
-	    free(writable_cmd);
-	    exit(0); 
+	    int status = execute_subshell_string(cmd_str);
+	    exit(status); 
       } 
     
       // --- PARENT PROCESS ---
       close(pipefd[1]); // Parent doesn't write
 
       // Read the output from the pipe
-      char buffer[BUFFER_SIZE];
       size_t capacity = BUFFER_SIZE;
       char *output = malloc(capacity);
       size_t total_bytes = 0;
       ssize_t bytes_read;
 
-      while ((bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+      while ((bytes_read = read(pipefd[0], output + total_bytes, capacity - total_bytes - 1)) > 0) {
 	    // fprintf(stderr, "[DEBUG Parent] Read %ld bytes from subshell\n", (long)bytes_read);
-	    if (total_bytes + bytes_read >= capacity) {
+	    total_bytes += bytes_read;
+	    if (capacity - total_bytes < 128) {
 		  capacity *= 2;
 		  output = realloc(output, capacity);
 	    }
-	    memcpy(output + total_bytes, buffer, bytes_read);
-	    total_bytes += bytes_read;
       }
       // fprintf(stderr, "[DEBUG Parent] Total bytes captured: %ld\n", (long)total_bytes);
       close(pipefd[0]);
@@ -251,6 +287,11 @@ void expand_command_substitution(ASTNode *node) {
 		  // Capture the stdout of the inner command
 		  char *captured_output = capture_command_output(inner_cmd);
 
+		  // DEBUG
+		  fprintf(stderr, "ARG = [%s]\n", node->args[i]);
+		  fprintf(stderr, "INNER = [%s]\n", inner_cmd);
+		  fprintf(stderr, "CAPTURED = [%s]\n", captured_output);
+
 		  // Reconstruct the argument string with the substitution replaced
 		  int prefix_len = start_idx;
 		  int suffix_len = strlen(node->args[i]) - end_idx - 1;
@@ -261,7 +302,9 @@ void expand_command_substitution(ASTNode *node) {
 		  // Copy prefix (before '$(')
 		  strncpy(new_arg, node->args[i], prefix_len);
 		  new_arg[prefix_len] = '\0';
-		  
+
+		  // DEBUG		  
+		  fprintf(stderr, "NEW = [%s]\n", new_arg);
 		  // Concatenate captured output
 		  strcat(new_arg, captured_output);
 		  
@@ -276,7 +319,7 @@ void expand_command_substitution(ASTNode *node) {
 		  free(captured_output);
 		  
 		  // Recursively check this argument again in case there are multiple $(...) in one arg
-		  i--; 
+		  if (strstr(new_arg, "$(")) i--; 
 	      }
 	  }
 }
@@ -290,6 +333,16 @@ void expand_env_variables(ASTNode *node) {
             int len = strlen(arg);
 
             for (int j = 0; j < len; j++) {
+		  // Skip $(...) command substitution so we don't destroy it
+		  if (arg[j] == '$' && j + 1 < len && arg[j+1] == '(') {
+			if (new_len < BUFFER_SIZE - 2) {
+			      new_arg[new_len++] = '$';
+			      new_arg[new_len++] = '(';
+			}
+			j++; // Skip '('
+			 continue;
+		  }	  
+	    
                   // Catch environmental marker, make sure it is not part of $( command_sub )
                   if (arg[j] == '$' && j + 1 < len && arg[j+1] != '(') {
                         j++;
@@ -328,9 +381,9 @@ void expand_env_variables(ASTNode *node) {
 int execute_ast(ASTNode *node) {
       if (!node) return 1;
 
-      /*for (int d = 0; d < node->arg_count; d++) {
+      for (int d = 0; d < node->arg_count; d++) {
 	    fprintf(stderr, "[DEBUG ARGS] args[%d] = '%s'\n", d, node->args[d]);
-      }*/
+      }
 
       // SUBSHELL ()
       if (node->type == NODE_SUBSHELL) {
@@ -339,34 +392,12 @@ int execute_ast(ASTNode *node) {
 		  // --- CHILD PROCESS ---
 		  in_subshell = 1;
 
-		  // Apply redirections for the entire subshell group
-		  if (node->input_file) {
-			int fd_in = open(node->input_file, O_RDONLY);
-			if (fd_in < 0) {
-			      perror("Ssh: open input file");
-			      exit(EXIT_FAILURE);
-			}
-			dup2(fd_in, STDIN_FILENO);
-			close(fd_in);
-		  }
-
-	    if (node->output_file) {
-		  int flags = O_WRONLY | O_CREAT;
-		  if (node->append) flags |= O_APPEND;
-                  else flags |= O_TRUNC;
-                  
-                  int fd_out = open(node->output_file, flags, 0644);
-                  if (fd_out < 0) {
-			perror("Ssh: open output file");
+		  if (setup_redirections(node) < 0) {
 			exit(EXIT_FAILURE);
-                  }
-		  dup2(fd_out, STDOUT_FILENO);
-                  close(fd_out);
-	    }
-
-            // Execute the inner sequence
-            int status = execute_ast(node->left);
-            exit(status);
+		  }
+		  // Execute the inner sequence
+		  int status = execute_ast(node->left);
+		  exit(status);
 	    } else if (pid < 0) {
 		  perror("Ssh: fork subshell failed");
 		  return 1;
@@ -637,36 +668,10 @@ int execute_ast(ASTNode *node) {
             signal(SIGTTIN, SIG_DFL);
             signal(SIGTTOU, SIG_DFL);
 
-            // Redirection logic (<, >, >>) ...
-	    // <
-	    if (node->input_file) {
-                int fd_in = open(node->input_file, O_RDONLY);
-                if (fd_in < 0) {
-                    perror("Ssh: open input file");
-                    exit(EXIT_FAILURE);
-                }
-                dup2(fd_in, STDIN_FILENO);
-                close(fd_in);
-            }
-
-            // (> and >>)
-            if (node->output_file) {
-                int flags = O_WRONLY | O_CREAT;
-                if (node->append) {
-                    flags |= O_APPEND;
-                } else {
-                    flags |= O_TRUNC;
-                }
-                
-                // Open with read/write permissions for owner, read-only for group/others
-                int fd_out = open(node->output_file, flags, 0644);
-                if (fd_out < 0) {
-                    perror("Ssh: open output file");
-                    exit(EXIT_FAILURE);
-                }
-                dup2(fd_out, STDOUT_FILENO);
-                close(fd_out);
-            }
+	    // Redirections
+	    if (setup_redirections(node) < 0) {
+		  exit(EXIT_FAILURE);
+	    }
 
 	    // Expand wildcards
 	    int final_arg_count = 0;
