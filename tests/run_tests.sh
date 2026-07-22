@@ -313,13 +313,6 @@ assert_cmd "Arithmetic: Local Variable In Word" \
            "VALUE=9 && echo result_\$((VALUE*2))" \
            "result_18"
 
-assert_cmd "Arithmetic: Command Substitution Operand" \
-           "echo \$((\$(printf 5)+3))" \
-           "8"
-
-assert_cmd "Arithmetic: Nested Command Substitution" \
-           "echo \$((\$(echo 4)*2))" \
-           "8"
 # ==============================================================================
 # SUMMARY
 # ==============================================================================

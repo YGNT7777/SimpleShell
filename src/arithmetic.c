@@ -19,37 +19,45 @@ char *expand_arithmetic(const char *word) {
 	    if (strncmp(p, "$((", 3) == 0) {
 		  p += 3;
 		  const char *start = p;
-		  int depth = 1;
 
-		  while (*p && depth > 0) {
-			if (*p == '(') depth++;
-			else if (*p == ')') {
-			      depth--;
-			      break;
+		  int depth = 0;
+
+		  while (*p) {
+			if (*p == '(') {
+			      depth++;
+			} else if (*p == ')') {
+			      if (depth == 0) {
+				    if (*(p + 1) == ')')
+					  break;
+			      } else {
+				    depth--;
+			      }
 			}
 			p++;
-		  }
+	    }
 
-		  size_t expr_len = p - start;
-		  char expr[512];
-		  if (expr_len >= sizeof(expr)) expr_len = sizeof(expr) - 1;
-		  strncpy(expr, start, expr_len);
-		  expr[expr_len] = '\0';
+	    size_t expr_len = p - start;
+	    char expr[512];
+	    if (expr_len >= sizeof(expr))
+		  expr_len = sizeof(expr) - 1;
 
-		  // Evaluate expression
-		  long long val = eval_arithmetic_expr(expr);
+            strncpy(expr, start, expr_len);
+            expr[expr_len] = '\0';
 
-		  char val_buf[32];
-		  snprintf(val_buf, sizeof(val_buf), "%lld", val);
-		  strcat(result, val_buf);
+            long long val = eval_arithmetic_expr(expr);
 
-		  if (*p == ')' && *(p + 1) == ')') p += 2; // skip closing ))
+            char val_buf[32];
+            snprintf(val_buf, sizeof(val_buf), "%lld", val);
+            strcat(result, val_buf);
+
+            if (*p == ')' && *(p + 1) == ')')
+		  p += 2;
 	    } else {
 		  size_t len = strlen(result);
 		  result[len] = *p;
 		  result[len + 1] = '\0';
 		  p++;
-	    }
+	    }	
       }
 
       return strdup(result);
