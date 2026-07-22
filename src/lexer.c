@@ -93,10 +93,58 @@ LexToken *lex(char *line, int *count)	{
 	    }
 
 	    // (TOK_WORD)
-	    char *start = p;
-	    while (*p && !isspace((unsigned char)*p) && 
+	    char *start = p;	    while (*p && !isspace((unsigned char)*p) && 
 		  *p != '|' && *p != '&' && *p != ';' && *p != '<' && *p != '>' && *p != '(' && *p != ')' ) 
 	    {
+		  if (*p == '$' && *(p + 1) == '(' && *(p + 2) == '(') {
+			p += 3; // Skip "$(("
+			int paren_depth = 0;
+
+			while (*p) {
+			      // Handle nested $( ... ) command substitution inside $(( ... ))
+			      if (*p == '$' && *(p + 1) == '(') {
+				    p += 2;
+				    int cmd_sub_depth = 1;
+				    while (*p && cmd_sub_depth > 0) {
+					  if (*p == '\\' && *(p + 1) != '\0') {
+						p += 2;
+						continue;
+					  }
+					  if (*p == '\'' || *p == '"') {
+						char q = *p++;
+						while (*p && *p != q) {
+						      if (*p == '\\' && *(p + 1) != '\0') p += 2;
+						      else p++;
+						}
+						if (*p == q) p++;
+						continue;
+					  }
+					  if (*p == '(') cmd_sub_depth++;
+					  else if (*p == ')') cmd_sub_depth--;
+					  p++;
+				    }
+				    continue;
+			      }
+
+			      if (*p == '(') {
+				    paren_depth++;
+				    p++;
+			      } else if (*p == ')') {
+				    if (paren_depth == 0 && *(p + 1) == ')') {
+					  p += 2; // Found closing "))"
+					  break;
+				    }
+				    if (paren_depth > 0) {
+					  paren_depth--;
+				    }
+				    p++;
+			      } else {
+				    p++;
+			      }
+			}
+			continue;
+		  }
+
 		  // If we hit $(, scan forward until the matching right parenthesis
 		  if (*p == '$' && *(p + 1) == '(') {
 			p += 2;
@@ -129,6 +177,7 @@ LexToken *lex(char *line, int *count)	{
 
 		  p++;
 	    }
+
 	    if (p > start) {
 		  size_t len = p - start;
 		  char *buf = strndup(start, len);

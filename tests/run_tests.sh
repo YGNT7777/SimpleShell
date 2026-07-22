@@ -206,6 +206,120 @@ assert_cmd "Builtin Execution: Help Output Verification" \
 assert_cmd "Builtin Execution: Jobs State Verification" \
            "jobs" \
            "No current background jobs."
+
+# 14. Arithmetic Expansion $((...))
+
+assert_cmd "Arithmetic: Basic Addition" \
+           "echo \$((1+2))" \
+           "3"
+
+assert_cmd "Arithmetic: Basic Subtraction" \
+           "echo \$((10-3))" \
+           "7"
+
+assert_cmd "Arithmetic: Basic Multiplication" \
+           "echo \$((5*6))" \
+           "30"
+
+assert_cmd "Arithmetic: Basic Division" \
+           "echo \$((20/4))" \
+           "5"
+
+assert_cmd "Arithmetic: Basic Modulo" \
+           "echo \$((20%6))" \
+           "2"
+
+assert_cmd "Arithmetic: Operator Precedence" \
+           "echo \$((2+3*4))" \
+           "14"
+
+assert_cmd "Arithmetic: Parentheses Override Precedence" \
+           "echo \$(((2+3)*4))" \
+           "20"
+
+assert_cmd "Arithmetic: Nested Parentheses" \
+           "echo \$((2*(3+(4*5))))" \
+           "46"
+
+assert_cmd "Arithmetic: Unary Minus" \
+           "echo \$((-5))" \
+           "-5"
+
+assert_cmd "Arithmetic: Unary Plus" \
+           "echo \$((+5))" \
+           "5"
+
+assert_cmd "Arithmetic: Negative Expression" \
+           "echo \$((-(3+2)))" \
+           "-5"
+
+assert_cmd "Arithmetic: Negative Multiplication" \
+           "echo \$((-3*-4))" \
+           "12"
+
+assert_cmd "Arithmetic: Embedded In Word" \
+           "echo A\$((2+3))B" \
+           "A5B"
+
+assert_cmd "Arithmetic: Multiple Expansions" \
+           "echo \$((1+2)) \$((3+4))" \
+           "3 7"
+
+assert_cmd "Arithmetic: Multiple Embedded Expansions" \
+           "echo X\$((1+2))Y\$((3+4))Z" \
+           "X3Y7Z"
+
+assert_cmd "Arithmetic: Whitespace Handling" \
+           "echo \$(( 1 + 2 ))" \
+           "3"
+
+assert_cmd "Arithmetic: Whitespace With Parentheses" \
+           "echo \$(( 2 * ( 3 + 4 ) ))" \
+           "14"
+
+assert_cmd "Arithmetic: Local Variable" \
+           "NUM=5 && echo \$((NUM+3))" \
+           "8"
+
+assert_cmd "Arithmetic: Multiple Variables" \
+           "A=10 && B=4 && echo \$((A*B))" \
+           "40"
+
+assert_cmd "Arithmetic: Variable Precedence" \
+           "A=10 && B=4 && echo \$((A+B*2))" \
+           "18"
+
+assert_cmd "Arithmetic: Undefined Variable Defaults To Zero" \
+           "echo \$((UNDEFINED+5))" \
+           "5"
+
+assert_cmd "Arithmetic: Long Expression" \
+           "echo \$((1+2+3+4+5+6+7+8+9+10))" \
+           "55"
+
+assert_cmd "Arithmetic: Mixed Operators" \
+           "echo \$(((1+2)*(3+4)-(5*6)+100/5))" \
+           "11"
+
+assert_cmd "Arithmetic: Division By Zero" \
+           "echo \$((10/0))" \
+           "0"
+
+assert_cmd "Arithmetic: Local Variable" \
+           "X=7 && echo \$((X+5))" \
+           "12"
+
+assert_cmd "Arithmetic: Local Variable In Word" \
+           "VALUE=9 && echo result_\$((VALUE*2))" \
+           "result_18"
+
+assert_cmd "Arithmetic: Command Substitution Operand" \
+           "echo \$((\$(printf 5)+3))" \
+           "8"
+
+assert_cmd "Arithmetic: Nested Command Substitution" \
+           "echo \$((\$(echo 4)*2))" \
+           "8"
 # ==============================================================================
 # SUMMARY
 # ==============================================================================

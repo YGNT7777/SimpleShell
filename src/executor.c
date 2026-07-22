@@ -1,6 +1,7 @@
 #include "executor.h"
 #include "lexer.h"
 #include "parser.h"
+#include "arithmetic.h"
 #include <glob.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -71,6 +72,15 @@ void update_jobs(void) {
 		  prev = curr;
 		  curr = curr->next;
 	    }
+      }
+}
+
+static void expand_arithmetic_node(ASTNode *node) {
+      for (int i = 0; i < node->arg_count; i++) {
+	    char *expanded = expand_arithmetic(node->args[i]);
+
+	    free(node->args[i]);
+	    node->args[i] = expanded;
       }
 }
 
@@ -288,9 +298,10 @@ void expand_command_substitution(ASTNode *node) {
 		  char *captured_output = capture_command_output(inner_cmd);
 
 		  // DEBUG
-		  fprintf(stderr, "ARG = [%s]\n", node->args[i]);
+		  /*fprintf(stderr, "ARG = [%s]\n", node->args[i]);
 		  fprintf(stderr, "INNER = [%s]\n", inner_cmd);
 		  fprintf(stderr, "CAPTURED = [%s]\n", captured_output);
+		  */
 
 		  // Reconstruct the argument string with the substitution replaced
 		  int prefix_len = start_idx;
@@ -304,7 +315,8 @@ void expand_command_substitution(ASTNode *node) {
 		  new_arg[prefix_len] = '\0';
 
 		  // DEBUG		  
-		  fprintf(stderr, "NEW = [%s]\n", new_arg);
+		  //fprintf(stderr, "NEW = [%s]\n", new_arg);
+		  
 		  // Concatenate captured output
 		  strcat(new_arg, captured_output);
 		  
@@ -381,8 +393,19 @@ void expand_env_variables(ASTNode *node) {
 int execute_ast(ASTNode *node) {
       if (!node) return 1;
 
-      for (int d = 0; d < node->arg_count; d++) {
+      /*for (int d = 0; d < node->arg_count; d++) {
 	    fprintf(stderr, "[DEBUG ARGS] args[%d] = '%s'\n", d, node->args[d]);
+      }*/
+      
+      // Check for variable assignment (e.g., FOO=20)
+      if (node->arg_count == 1 && strchr(node->args[0], '=') != NULL) {
+	    char *eq = strchr(node->args[0], '=');
+	    *eq = '\0';
+	    char *name = node->args[0];
+	    char *val = eq + 1;
+
+	    setenv(name, val, 1);
+	    return 0; // Success
       }
 
       // SUBSHELL ()
@@ -491,6 +514,7 @@ int execute_ast(ASTNode *node) {
       if (node->type == NODE_COMMAND) {
 	    if (node->arg_count == 0) return 0;
 
+	    expand_arithmetic_node(node);
 	    expand_command_substitution(node);
 	    expand_env_variables(node);
 
