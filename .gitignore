@@ -1,3 +1,4 @@
 archive
 SimpleShell
 *.o
+tests/test_suite.log

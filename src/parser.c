@@ -155,7 +155,8 @@ ASTNode *parse_command(LexToken *tokens, int *pos) {
       ASTNode *node = create_node(NODE_COMMAND);
       int cap = 8;
       node->args = malloc(cap * sizeof(char *));
-      if (!node->args) { perror("malloc"); exit(EXIT_FAILURE); }
+      node->arg_quoted = malloc(cap * sizeof(int));
+      if (!node->args || !node->arg_quoted) { perror("malloc"); exit(EXIT_FAILURE); }
     
       while (tokens[*pos].type == TOK_WORD || tokens[*pos].type == TOK_REDIR_IN || 
 	    tokens[*pos].type == TOK_REDIR_OUT || tokens[*pos].type == TOK_REDIR_APPEND) {
@@ -165,10 +166,16 @@ ASTNode *parse_command(LexToken *tokens, int *pos) {
 	    if (t == TOK_WORD) {
 		  if (node->arg_count >= cap - 1) {
 		  cap *= 2;
-		  node->args = realloc(node->args, cap * sizeof(char *));
-		  if (!node->args) { perror("realloc"); exit(EXIT_FAILURE); }
+		  char **new_args = realloc(node->args, cap * sizeof(char *));
+		  int *new_arg_quoted = realloc(node->arg_quoted, cap * sizeof(int));
+		  if (!new_args || !new_arg_quoted) { perror("realloc"); exit(EXIT_FAILURE); }
+		  node->args = new_args;
+		  node->arg_quoted = new_arg_quoted;
 	    }
-            node->args[node->arg_count++] = expand_env_var(tokens[*pos].text);
+            node->args[node->arg_count] = strdup(tokens[*pos].text);
+            if (!node->args[node->arg_count]) { perror("strdup"); exit(EXIT_FAILURE); }
+            node->arg_quoted[node->arg_count] = tokens[*pos].quoted;
+            node->arg_count++;
             (*pos)++;
         } else if (t == TOK_REDIR_IN) {
 	    (*pos)++;
@@ -200,6 +207,7 @@ void free_ast(ASTNode *node) {
 		  free(node->args[i]);
 	    }
 	    free(node->args);
+	    free(node->arg_quoted);
       }
 
       free_ast(node->left);

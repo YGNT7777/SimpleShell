@@ -12,6 +12,19 @@ void add_token(LexToken **tokens, int *count, int *capacity, TokenType type, con
       (*count)++;
 }
 
+static char *strip_embedded_quotes(const char *word) {
+      size_t len = strlen(word);
+      char *result = malloc(len + 1);
+      if (!result) { perror("malloc"); exit(EXIT_FAILURE); }
+
+      size_t out = 0;
+      for (size_t i = 0; i < len; i++) {
+	    if (word[i] != '\'' && word[i] != '"') result[out++] = word[i];
+      }
+      result[out] = '\0';
+      return result;
+}
+
 LexToken *lex(char *line, int *count)	{
       int capacity = 32;
       LexToken *tokens = malloc(capacity * sizeof(LexToken));
@@ -96,6 +109,19 @@ LexToken *lex(char *line, int *count)	{
 	    char *start = p;	    while (*p && !isspace((unsigned char)*p) && 
 		  *p != '|' && *p != '&' && *p != ';' && *p != '<' && *p != '>' && *p != '(' && *p != ')' ) 
 	    {
+		  if (*p == '\'' || *p == '"') {
+			char quote = *p++;
+			while (*p && *p != quote) {
+			      if (*p == '\\' && *(p + 1) != '\0') p += 2;
+			      else p++;
+			}
+			if (*p != quote) {
+			      fprintf(stderr, "Ssh: unmatched quote\n");
+			      break;
+			}
+			p++;
+			continue;
+		  }
 		  if (*p == '$' && *(p + 1) == '(' && *(p + 2) == '(') {
 			p += 3; // Skip "$(("
 			int paren_depth = 0;
@@ -181,7 +207,10 @@ LexToken *lex(char *line, int *count)	{
 	    if (p > start) {
 		  size_t len = p - start;
 		  char *buf = strndup(start, len);
-		  add_token(&tokens, count, &capacity, TOK_WORD, buf, 0);
+		  char *unquoted_buf = strstr(buf, "$(") ? strdup(buf) : strip_embedded_quotes(buf);
+		  if (!unquoted_buf) { perror("strdup"); exit(EXIT_FAILURE); }
+		  add_token(&tokens, count, &capacity, TOK_WORD, unquoted_buf, 0);
+		  free(unquoted_buf);
 		  free(buf);
 		  continue;
 	    }
@@ -240,4 +269,3 @@ void print_tokens(LexToken *tokens, int count) {
     
       printf("==========================\n\n");
 }
-

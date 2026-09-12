@@ -10,6 +10,7 @@ static int in_subshell = 0;
 
 const char *builtin_str[] = {
       "cd",
+      "export",
       "help",
       "exit",
       "jobs",
@@ -77,6 +78,7 @@ void update_jobs(void) {
 
 static void expand_arithmetic_node(ASTNode *node) {
       for (int i = 0; i < node->arg_count; i++) {
+	    if (node->arg_quoted[i] == 1) continue;
 	    char *expanded = expand_arithmetic(node->args[i]);
 
 	    free(node->args[i]);
@@ -90,7 +92,7 @@ int Ssh_num_builtins(void) {
 
 // Expansion Helper Function
 // Scan an array of arguments, expand any that contain wildcards, and return a newly allocated, larger array
-static char **expand_wildcards(char **args, int arg_count, int *new_count) {
+static char **expand_wildcards(char **args, const int *arg_quoted, int arg_count, int *new_count) {
       // Start with a reasonable capacity for the expanded arguments
       int capacity = arg_count + 8;
       char **expanded_args = malloc(sizeof(char *) * capacity);
@@ -98,7 +100,7 @@ static char **expand_wildcards(char **args, int arg_count, int *new_count) {
 
       for (int i = 0; i < arg_count; i++) {
 	    // Check for any wildcard pattern character (*, ?, or [])
-            if (strpbrk(args[i], "*?[")) {
+	    if (arg_quoted[i] == 0 && strpbrk(args[i], "*?[")) {
 		  glob_t glob_result;
 		  // GLOB_NOCHECK returns the pattern itself if no files match (like bash)
 		  int ret = glob(args[i], GLOB_NOCHECK | GLOB_TILDE, NULL, &glob_result);
@@ -289,6 +291,7 @@ char *capture_command_output(const char *cmd_str) {
 
 void expand_command_substitution(ASTNode *node) {
       for (int i = 0; i < node->arg_count; i++) {
+	    if (node->arg_quoted[i] == 1) continue;
 	    // fprintf(stderr, "[DEBUG Expand] Checking arg[%d]: '%s'\n", i, node->args[i]);
 	    int start_idx, end_idx;
 	    char *inner_cmd = extract_command_substitution(node->args[i], &start_idx, &end_idx);
@@ -339,6 +342,7 @@ void expand_command_substitution(ASTNode *node) {
 // Scans an argument array and evaluates environment variables ($VAR)
 void expand_env_variables(ASTNode *node) {
       for (int i = 0; i < node->arg_count; i++) {
+	    if (node->arg_quoted[i] == 1) continue;
 	    char *arg = node->args[i];
             char new_arg[BUFFER_SIZE] = {0};
             int new_len = 0;
@@ -388,6 +392,40 @@ void expand_env_variables(ASTNode *node) {
             free(node->args[i]);
             node->args[i] = strdup(new_arg);
       }
+}
+
+static int is_builtin(const char *command) {
+      for (int i = 0; i < Ssh_num_builtins(); i++) {
+	    if (strcmp(command, builtin_str[i]) == 0) return 1;
+      }
+      return strchr(command, '=') != NULL;
+}
+
+static int setup_builtin_redirections(ASTNode *node, int saved_fds[2]) {
+      saved_fds[0] = -1;
+      saved_fds[1] = -1;
+      if (!node->input_file && !node->output_file) return 0;
+
+      if (node->input_file && (saved_fds[0] = dup(STDIN_FILENO)) < 0) {
+	    perror("Ssh: dup stdin");
+	    return -1;
+      }
+      if (node->output_file && (saved_fds[1] = dup(STDOUT_FILENO)) < 0) {
+	    perror("Ssh: dup stdout");
+	    if (saved_fds[0] >= 0) close(saved_fds[0]);
+	    return -1;
+      }
+      if (setup_redirections(node) == 0) return 0;
+
+      if (saved_fds[0] >= 0) { dup2(saved_fds[0], STDIN_FILENO); close(saved_fds[0]); }
+      if (saved_fds[1] >= 0) { dup2(saved_fds[1], STDOUT_FILENO); close(saved_fds[1]); }
+      return -1;
+}
+
+static void restore_builtin_redirections(int saved_fds[2]) {
+      fflush(NULL);
+      if (saved_fds[0] >= 0) { dup2(saved_fds[0], STDIN_FILENO); close(saved_fds[0]); }
+      if (saved_fds[1] >= 0) { dup2(saved_fds[1], STDOUT_FILENO); close(saved_fds[1]); }
 }
 
 int execute_ast(ASTNode *node) {
@@ -518,6 +556,13 @@ int execute_ast(ASTNode *node) {
 	    expand_command_substitution(node);
 	    expand_env_variables(node);
 
+	    int builtin_fds[2] = { -1, -1 };
+	    if (is_builtin(node->args[0]) && setup_builtin_redirections(node, builtin_fds) < 0) {
+		  return 1;
+	    }
+
+#define RETURN_BUILTIN(status) do { restore_builtin_redirections(builtin_fds); return (status); } while (0)
+
 	    // --- BUILTINS ---
 	    if (strcmp(node->args[0], "exit") == 0) {
 		  exit(0);
@@ -527,12 +572,25 @@ int execute_ast(ASTNode *node) {
 		  char *target = node->args[1] ? node->args[1] : getenv("HOME");
 		  if (!target) {
 			fprintf(stderr, "Ssh: HOME not set\n");
-			return 1;
+			RETURN_BUILTIN(1);
 		  } else if (chdir(target) != 0) {
 			perror("Ssh: cd");
-			return 1;
+			RETURN_BUILTIN(1);
 		  }
-		  return 0;
+		  RETURN_BUILTIN(0);
+	    }
+
+	    if (strcmp(node->args[0], "export") == 0) {
+		  for (int i = 1; node->args[i]; i++) {
+			char *eq = strchr(node->args[i], '=');
+			if (!eq) continue;
+			*eq = '\0';
+			if (setenv(node->args[i], eq + 1, 1) != 0) {
+				  perror("Ssh: export");
+				  RETURN_BUILTIN(1);
+			}
+		  }
+		  RETURN_BUILTIN(0);
 	    }
 
 	    if (strchr(node->args[0], '=') != NULL) {
@@ -550,11 +608,11 @@ int execute_ast(ASTNode *node) {
 	                value++;
 	          }
 
-	          if (setenv(key, value, 1) != 0) {
-	                perror("Ssh: setenv");
-	                return 1;
-	          }
-	          return 0; // Local assignment completed, skip spawning a child process
+		  if (setenv(key, value, 1) != 0) {
+			perror("Ssh: setenv");
+			RETURN_BUILTIN(1);
+		  }
+		  RETURN_BUILTIN(0); // Local assignment completed, skip spawning a child process
 	    }
 
 	    if (strcmp(node->args[0], "help") == 0) {
@@ -567,7 +625,7 @@ int execute_ast(ASTNode *node) {
 		  }
 
 		  printf("Use the man command for information on other programs.\n");
-		  return 0;
+		  RETURN_BUILTIN(0);
 	    }
 	    
 	    if (strcmp(node->args[0], "jobs") == 0) {
@@ -581,13 +639,13 @@ int execute_ast(ASTNode *node) {
 			     j->command);
 		      j = j->next;
 		  }
-		  return 0;
+		  RETURN_BUILTIN(0);
 	    }
 	    
 	    if (strcmp(node->args[0], "fg") == 0) {
 		  if (!node->args[1]) {
 		      fprintf(stderr, "usage: fg <job_id>\n");
-		      return 1;
+		      RETURN_BUILTIN(1);
 		  }
 		  int target_id = atoi(node->args[1]);
 		  Job *j = first_job;
@@ -614,17 +672,17 @@ int execute_ast(ASTNode *node) {
 		      
 		      // Reclaim terminal control
 		      tcsetpgrp(STDIN_FILENO, getpgrp());
-		  } else {
+		} else {
 			fprintf(stderr, "Ssh: fg: no such job\n");
-			return 1;
-		  }
-		  return 0;
+			RETURN_BUILTIN(1);
+		}
+		  RETURN_BUILTIN(0);
 	    }
 
 	    if (strcmp(node->args[0], "bg") == 0) {
 		  if (!node->args[1]) {
 		      fprintf(stderr, "usage: bg <job_id>\n");
-		      return 1;
+		      RETURN_BUILTIN(1);
 		  }
 		  int target_id = atoi(node->args[1]);
 		  Job *j = first_job;
@@ -635,17 +693,17 @@ int execute_ast(ASTNode *node) {
 		      printf("[%d] %s &\n", j->id, j->command);
 		      // Send resume signal in background
 		      kill(-j->pgid, SIGCONT);
-		  } else {
+		} else {
 			fprintf(stderr, "Ssh: bg: no such job\n");
-			return 1;
-		  }
-		  return 0;
+			RETURN_BUILTIN(1);
+		}
+		  RETURN_BUILTIN(0);
 	    }
 	    
 	    if (strcmp(node->args[0], "kill") == 0) {
 		  if (!node->args[1]) {
 		      fprintf(stderr, "usage: kill <job_id>\n");
-		      return 1;
+		      RETURN_BUILTIN(1);
 		  }
 		  int target_id = atoi(node->args[1]);
 		  Job *j = first_job;
@@ -663,13 +721,13 @@ int execute_ast(ASTNode *node) {
 			  }
 		      } else {
 			perror("Ssh: kill");
-			return 1;
+			RETURN_BUILTIN(1);
 		      }
 		  } else {
 			fprintf(stderr, "Ssh: kill: no such job\n");
-			return 1;
+			RETURN_BUILTIN(1);
 		  }
-		  return 0;
+		  RETURN_BUILTIN(0);
 	      }
       // --- EXTERNAL COMMAND EXECUTION & REDIRECTION ---
       pid_t pid = fork();
@@ -699,7 +757,7 @@ int execute_ast(ASTNode *node) {
 
 	    // Expand wildcards
 	    int final_arg_count = 0;
-            char **final_args = expand_wildcards(node->args, node->arg_count, &final_arg_count);
+            char **final_args = expand_wildcards(node->args, node->arg_quoted, node->arg_count, &final_arg_count);
 
 	    execvp(final_args[0], final_args);
               
@@ -776,3 +834,5 @@ int execute_ast(ASTNode *node) {
 
     return 1;
 }
+
+#undef RETURN_BUILTIN

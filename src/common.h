@@ -51,6 +51,7 @@ typedef struct ASTNode {
     
       // NODE_COMMAND
       char **args;
+      int *arg_quoted;       // 0=unquoted, 1=single-quoted, 2=double-quoted
       int arg_count;
       char *input_file;
       char *output_file;

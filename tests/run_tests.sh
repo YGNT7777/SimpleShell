@@ -1,7 +1,9 @@
 #!/bin/bash
 
-SHELL_BIN="../SimpleShell"
-LOG_FILE="test_suite.log"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SHELL_BIN="$SCRIPT_DIR/../SimpleShell"
+LOG_FILE=$(mktemp "${TMPDIR:-/tmp}/simpleshell-tests.XXXXXX")
+trap 'rm -f "$LOG_FILE"' EXIT
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -13,6 +15,13 @@ echo "=== SimpleShell Test Run: $(date) ===" > "$LOG_FILE"
 total_tests=0
 failed_tests=0
 
+run_shell() {
+    local input_command="$1"
+    (cd "$SCRIPT_DIR" && printf '%s\n' "$input_command" | "$SHELL_BIN") 2>&1 |
+        tr -d '\r' |
+        awk -v command="$input_command" 'seen == 0 && index($0, command) { seen = 1; next } { print }'
+}
+
 assert_cmd() {
     local test_name="$1"
     local input_command="$2"
@@ -20,7 +29,7 @@ assert_cmd() {
 
     ((total_tests++))
 
-    actual_output=$(echo "$input_command" | "$SHELL_BIN" 2>&1 | tr -d '\r')
+    actual_output=$(run_shell "$input_command")
     
     local passed=true
 
@@ -45,6 +54,31 @@ assert_cmd() {
     fi
 }
 
+assert_not_cmd() {
+    local test_name="$1"
+    local input_command="$2"
+    local unexpected_output="$3"
+
+    ((total_tests++))
+    actual_output=$(run_shell "$input_command")
+
+    if [[ "$actual_output" =~ $unexpected_output ]]; then
+        ((failed_tests++))
+        echo -e "${RED}[ FAIL ]${NC} $test_name"
+        {
+            echo "-----------------------------------"
+            echo "Test: $test_name"
+            echo "Input: $input_command"
+            echo "Unexpected string: $unexpected_output"
+            echo "Actual Output:"
+            echo "$actual_output"
+            echo "-----------------------------------"
+        } >> "$LOG_FILE"
+    else
+        echo -e "${GREEN}[ PASS ]${NC} $test_name"
+    fi
+}
+
 echo -e "${CYAN}=== Starting SimpleShell Regression Suite ===${NC}"
 
 # ==============================================================================
@@ -56,18 +90,18 @@ assert_cmd "Pipeline Success -> AND Execution" \
            "echo 'target_val' | grep 'target' && echo 'Success'" \
            "Success"
 
-assert_cmd "Pipeline Failure -> AND Short-Circuit" \
+assert_not_cmd "Pipeline Failure -> AND Short-Circuit" \
            "echo 'wrong_val' | grep 'target' && echo 'ShouldNotPrint'" \
-           "" 
+           "ShouldNotPrint"
 
 assert_cmd "Pipeline Failure -> OR Execution" \
            "echo 'wrong_val' | grep 'target' || echo 'Fallback'" \
            "Fallback"
 
 # 2. Subshell Isolation for Built-ins
-assert_cmd "Subshell Isolation (Exit in Pipe)" \
+assert_not_cmd "Subshell Isolation (Exit in Pipe)" \
            "echo 'stay alive' | exit" \
-           "" 
+           "stay alive"
 
 # 3. Environment Variable Expansion
 assert_cmd "Environment Variable Expansion" \
@@ -100,6 +134,18 @@ assert_cmd "Lexer: Input Redirection (<)" \
 assert_cmd "Lexer: Subshell Parentheses (Nested Groups)" \
            "(echo 'Inside Subshell')" \
            "Inside Subshell"
+
+assert_cmd "Quoted wildcard remains literal" \
+           "printf '%s\\n' '*'" \
+           "*"
+
+assert_cmd "Single quotes prevent variable expansion" \
+           "echo '\$SIMPLE_SHELL_QUOTED'" \
+           "\$SIMPLE_SHELL_QUOTED"
+
+assert_cmd "Builtin output redirection" \
+           "help > test_help.txt && grep 'SimpleShell' test_help.txt && rm test_help.txt" \
+           "SimpleShell"
 
 assert_cmd "Lexer: Unmatched Quote Error Handling" \
            "echo \"unmatched" \
@@ -321,8 +367,8 @@ echo -e "${CYAN}=== Test Summary ===${NC}"
 echo -e "Total Executed: $total_tests"
 if [ "$failed_tests" -eq 0 ]; then
     echo -e "${GREEN}All tests passed successfully!${NC}"
-    rm -f "$LOG_FILE" 
 else
     echo -e "${RED}Failed Tests: $failed_tests${NC}"
-    echo -e "Review tests/${CYAN}$LOG_FILE${NC} for full failure details."
+    echo -e "Failure details: ${CYAN}$LOG_FILE${NC}"
+    trap - EXIT
 fi
